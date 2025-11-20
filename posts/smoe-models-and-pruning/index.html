@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Understanding SMoE Models and Pruning - My Blog</title>
+
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Droid+Serif&family=Droid+Sans&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="../../css/style.css" rel="stylesheet">
+</head>
+
+<body>
+    <nav class="navbar navbar-dark bg-dark navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="../../">My Blog</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item">
+                        <a class="nav-link" href="../../">Blog</a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <article>
+            <header class="post-header">
+                <h1>Understanding SMoE Models and Pruning</h1>
+                <p class="post-meta">November 19, 2025</p>
+            </header>
+
+            <div class="post-body">
+                <p>I recently stumbled upon a research paper called "REAP: Router-weighted Expert Activation Pruning". The paper showed that you could remove up to 50% of experts from massive Sparse Mixture of Experts (SMoE) models with barely any performance loss. My first thought was: "Wait, if half the model is redundant, why even train it that big in the first place?"</p>
+
+                <p>That question sent me down a rabbit hole, and this post is basically me working through what I learned.</p>
+
+                <h2>First, What Even Are SMoE Models?</h2>
+
+                <p>Before I could understand the pruning results, I had to actually understand the architecture. I'd heard about Mixture of Experts before but never really looked into how they work. Here is what i understood from some basic research:</p>
+
+                <p><strong>Normal dense models</strong> (like GPT) work pretty straightforwardly:</p>
+                <ul>
+                    <li>Every token goes through the same feedforward layers</li>
+                    <li>All parameters get activated for every token</li>
+                    <li>Simple, but expensive at scale</li>
+                </ul>
+
+                <p><strong>SMoE models</strong> do something different:</p>
+                <ul>
+                    <li>Each layer has multiple "expert" networks (like 8 separate feedforward networks)</li>
+                    <li>A router/gating network looks at each token and decides which 1-2 experts should handle it</li>
+                    <li>Only chosen experts process that token</li>
+                    <li>The outputs get combined with a weighted sum</li>
+                </ul>
+
+                <p>So if you have 8 experts of 10B parameters each, that's 80B total parameters, but only ~20B are active for any given token (if using top-2 routing). This is how models like DeepSeek or Qwen can be so large but still efficient.</p>
+
+                <div class="text-center my-4">
+                    <img src="images/MoE.png" alt="Mixture of Experts Architecture" class="img-fluid" style="max-width: 100%; height: auto;">
+                </div>
+
+                <h2>Back to the Pruning Paper: The Results That Confused Me</h2>
+
+                <p>The REAP paper showed results for models like Qwen3-Coder-480B where they could prune 25% or even 50% of experts and maintain almost identical performance on most benchmarks. Some observations:</p>
+
+                <ul>
+                    <li>At 25% pruning: barely any degradation</li>
+                    <li>At 50% pruning: most benchmarks only dropped 1-2%</li>
+                    <li>Some tasks (like agentic benchmarks) were more sensitive, mostly categories that require a multi-step reasoning process as opposed to tasks that can be accomplished with one-shot generation (like multiple choice questions)</li>
+                </ul>
+
+                <p>This is where my confusion started. <strong>If you can throw away half the model with minimal loss, why did they train it so big?</strong> Isn't that just wasted compute?</p>
+
+                <h2>Questions I Had (And What I Learned)</h2>
+
+                <h3>Q1: Does having more experts during training mean each expert becomes less redundant?</h3>
+
+                <p>I managed to find a paper that answers this question but in short, yes.</p>
+
+                <p>This was a key realization for me. When you train with:</p>
+
+                <ul>
+                    <li><strong>Few experts (like 16):</strong> Each expert has to be a generalist. They all learn to answer various kinds of questions.</li>
+                    <li><strong>Many experts (like 128):</strong> Each expert can specialize narrowly. One could be an expert at coding while another could be great at doing math and neither of them have much capability overlap between them.</li>
+                </ul>
+
+                <p>More experts = more narrow specialization = less redundancy between them.</p>
+
+                <p><strong>This means the experts with the lowest activation frequency (the ones that get pruned) are actually the most specialized ones.</strong> They handle edge cases and niche patterns that don't show up often in evaluation (assuming we are using the REAP method to prune the model).</p>
+
+                <h3>Q2: So as model size and number of experts increase, does pruning tolerance decrease?</h3>
+
+                <p>That same research paper shows that:</p>
+                <ul>
+                    <li>Models with <strong>128 experts</strong> can only be pruned by ~50% before major degradation</li>
+                    <li>Models with <strong>32 experts</strong> can be pruned by ~75% and still perform relatively well</li>
+                </ul>
+
+                <p>Why? Because smaller models have more redundant, generalist experts. If you remove one, the others can cover for it since they have overlapping skills.</p>
+
+                <p>Larger models have highly specialized experts. Remove one, and you've lost a unique capability that no other expert has.</p>
+
+                <p><strong>But here's the thing:</strong> Even though smaller models can be pruned more aggressively, the larger model pruned to 50% still outperforms the smaller model pruned to 25%.</p>
+
+                <div class="text-center my-4">
+                    <img src="images/numberofexpertsVS.png" alt="Number of Experts vs Pruning Tolerance" class="img-fluid" style="max-width: 100%; height: auto;">
+                </div>
+
+                <h3>Q3: If pruning works so well, why train bigger models at all? Why not just train at the size I want to deploy?</h3>
+
+                <p>This is the question that really made everything click for me.</p>
+
+                <p><strong>You can't skip the large training phase.</strong> Here's why:</p>
+
+                <p>When you train with 480B parameters and lots of experts:</p>
+                <ol>
+                    <li>Competition between experts drives specialization</li>
+                    <li>More diverse gradient pathways during learning</li>
+                    <li>Richer representations emerge across the expert pool</li>
+                    <li>The model learns better patterns overall</li>
+                </ol>
+
+                <p>Then when you prune to 240B:</p>
+                <ul>
+                    <li>You keep the BEST experts from that larger pool</li>
+                    <li>Those remaining experts learned better specializations during training</li>
+                    <li>They benefit from having competed with more experts during training</li>
+                </ul>
+
+                <p>If you just trained 240B from scratch:</p>
+                <ul>
+                    <li>Each expert is forced to be more general from the start</li>
+                    <li>Less competition, less specialization</li>
+                    <li>Lower quality ceiling even when fully trained</li>
+                </ul>
+
+                <p><strong>The analogy that helped me:</strong> If you have 100 people competing to come up with the best ideas versus only 50 people competing, the larger pool will always produce superior results since competition encourages higher quality. Even if you then remove half the people from that first group of 100, their quality remains high (assuming they don't become complacent)</p>
+
+                <h2>What This All Means</h2>
+
+                <p>After going through all this, the "paradox" resolved itself. It's not actually wasteful to train with more experts than you deploy. The training capacity is what unlocks the performance ceiling. Training big and pruning aggressively is a viable strategy.</p>
+
+                <h2>The Bigger Picture</h2>
+
+                <p>This exploration taught me something important about deep learning: <strong>capacity during learning matters even if you don't need that capacity during deployment.</strong></p>
+
+                <p>It's similar to how:</p>
+                <ul>
+                    <li>You need a large dataset even if you distill to a smaller model</li>
+                    <li>You need high-precision training even if you deploy in INT8</li>
+                    <li>You need many training iterations even if you only use the final checkpoint</li>
+                </ul>
+
+                <p>The journey matters, not just the destination.</p>
+
+                <p>I'm still pretty early in understanding all the nuances of SMoE architectures—there's way more to explore around routing strategies, load balancing, expert merging techniques, and how this all scales to even larger models. But this deep dive into pruning helped me understand why model makers are still pushing for bigger models despite compression working so well.</p>
+
+                <p>If you're also learning about this stuff and have insights or corrections, I'd love to hear them!</p>
+
+                <hr>
+
+                <p><em>These are my notes and understanding. If I got something wrong or oversimplified, please let me know—I'm still learning!</em></p>
+
+                <a href="../../" class="back-link">← Back to home</a>
+            </div>
+        </article>
+    </div>
+
+    <footer class="mt-5 py-4 bg-light">
+        <div class="container text-center">
+            <p class="mb-0">&copy; 2024 My Blog. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+
+</html>

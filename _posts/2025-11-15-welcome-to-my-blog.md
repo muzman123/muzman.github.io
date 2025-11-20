@@ -1,8 +1,7 @@
 ---
 layout: post
 title: "Welcome to My Blog"
-date: 2024-01-15
-image: /assets/images/welcome.jpg
+date: 2025-11-15
 excerpt: "An introduction to this blog and what you can expect to find here."
 ---
 
